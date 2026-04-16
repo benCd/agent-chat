@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 from datetime import datetime
@@ -23,7 +24,16 @@ def _get_store() -> MessageStore:
         sm = SessionManager()
         session_id = sm.resolve_session(os.environ.get("AGENT_CHAT_SESSION"))
         _store = sm.get_store(session_id)
+        atexit.register(_close_store)
     return _store
+
+
+def _close_store():
+    """Shutdown hook to close the global store cleanly."""
+    global _store
+    if _store is not None:
+        _store.close()
+        _store = None
 
 
 def _default_str(obj):
@@ -32,7 +42,7 @@ def _default_str(obj):
         return obj.isoformat()
     if isinstance(obj, AgentStatus | SenderType):
         return obj.value
-    return str(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 def _dump(obj) -> str:
@@ -93,9 +103,14 @@ def post_message(
 def update_status(agent_id: str, status: str, detail: str = "") -> str:
     """Update agent status (idle/working/waiting/done)."""
     store = _get_store()
+    try:
+        agent_status = AgentStatus(status)
+    except ValueError:
+        valid = ", ".join(s.value for s in AgentStatus)
+        return json.dumps({"error": f"Invalid status {status!r}. Must be one of: {valid}"})
     agent = store.update_agent_status(
         agent_id=agent_id,
-        status=AgentStatus(status),
+        status=agent_status,
         detail=detail or None,
     )
     if agent is None:

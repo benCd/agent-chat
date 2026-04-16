@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
 from ..core.models import Agent, AgentStatus, Message, SenderType
 from ..core.store import MessageStore, SessionManager
+
+logger = logging.getLogger(__name__)
 
 
 class AgentClient:
@@ -88,12 +92,15 @@ class AgentClient:
             att_dir = self._session_mgr.get_attachments_dir(self._session_id)
             for img_path in image_paths:
                 src = Path(img_path)
-                if src.exists():
-                    dest = att_dir / f"{Message().id[:8]}_{src.name}"
+                if src.exists() and src.is_file():
+                    # 8-hex-char prefix (32 bits of entropy) is sufficient here
+                    # because collisions only matter within a single attachment
+                    # directory, which typically holds a small number of files.
+                    dest = att_dir / f"{uuid.uuid4().hex[:8]}_{src.name}"
                     shutil.copy2(src, dest)
                     stored_paths.append(str(dest))
                 else:
-                    stored_paths.append(img_path)
+                    logger.warning("Skipping invalid image path: %s", img_path)
 
         return self._store.post_message(
             sender_id=self._agent_id,
@@ -155,7 +162,7 @@ class AgentClient:
                     if messages:
                         callback(messages)
                 except Exception:
-                    pass
+                    logger.warning("Polling error in agent %s", self._agent_id, exc_info=True)
                 self._poll_stop.wait(interval)
 
         self._poll_thread = threading.Thread(target=_poll, daemon=True)
@@ -170,3 +177,10 @@ class AgentClient:
     def close(self):
         self.stop_polling()
         self._store.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False

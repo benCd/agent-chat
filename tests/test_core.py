@@ -7,27 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from agent_chat.core.models import AgentStatus, SenderType
+from agent_chat.core.models import AgentStatus, Message, SenderType
 from agent_chat.core.store import MessageStore, SessionManager
 from agent_chat.sdk.client import AgentClient
-
-
-@pytest.fixture
-def tmp_dir():
-    with tempfile.TemporaryDirectory() as d:
-        yield Path(d)
-
-
-@pytest.fixture
-def store(tmp_dir):
-    s = MessageStore(tmp_dir / "test.db")
-    yield s
-    s.close()
-
-
-@pytest.fixture
-def session_mgr(tmp_dir):
-    return SessionManager(tmp_dir / "sessions")
 
 
 class TestMessageStore:
@@ -306,3 +288,263 @@ class TestAgentClient:
 
         for c in clients:
             c.close()
+
+
+# ── Additional test coverage (Phase 5) ──────────────────────────────────────
+
+
+class TestRetryOnBusy:
+    """T2 — Test _retry_on_busy decorator."""
+
+    def test_retries_on_locked(self, store):
+        """Simulate a locked-database error that resolves on retry."""
+        import sqlite3
+        from agent_chat.core.store import _retry_on_busy
+
+        call_count = 0
+
+        @_retry_on_busy
+        def flaky_operation():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise sqlite3.OperationalError("database is locked")
+            return "success"
+
+        result = flaky_operation()
+        assert result == "success"
+        assert call_count == 3
+
+    def test_non_busy_error_propagates(self):
+        """Non-busy OperationalErrors should propagate immediately."""
+        import sqlite3
+        from agent_chat.core.store import _retry_on_busy
+
+        @_retry_on_busy
+        def always_fail():
+            raise sqlite3.OperationalError("no such table: bogus")
+
+        with pytest.raises(sqlite3.OperationalError, match="no such table"):
+            always_fail()
+
+    def test_preserves_function_name(self):
+        """functools.wraps should be applied."""
+        from agent_chat.core.store import _retry_on_busy
+
+        @_retry_on_busy
+        def my_function():
+            """My docstring."""
+            pass
+
+        assert my_function.__name__ == "my_function"
+        assert my_function.__doc__ == "My docstring."
+
+
+class TestResolveSessionEnv:
+    """T3 — Test resolve_session with env var."""
+
+    def test_resolve_from_env_var(self, session_mgr, monkeypatch):
+        s = session_mgr.create_session("env-test")
+        monkeypatch.setenv("AGENT_CHAT_SESSION", s.id)
+        resolved = session_mgr.resolve_session(None)
+        assert resolved == s.id
+
+    def test_explicit_overrides_env(self, session_mgr, monkeypatch):
+        s1 = session_mgr.create_session("s1")
+        s2 = session_mgr.create_session("s2")
+        monkeypatch.setenv("AGENT_CHAT_SESSION", s1.id)
+        resolved = session_mgr.resolve_session(s2.id)
+        assert resolved == s2.id
+
+
+class TestGetMessagesSince:
+    """T4 — Test get_messages with since parameter."""
+
+    def test_since_filter(self, store):
+        store.register_agent("a1", "Agent")
+        m1 = store.post_message("a1", "first")
+        time.sleep(0.01)
+        m2 = store.post_message("a1", "second")
+
+        msgs = store.get_messages("general", since=m1.timestamp)
+        assert len(msgs) == 1
+        assert msgs[0].content == "second"
+
+
+class TestMessageMetadata:
+    """T5 — Test post_message with metadata round-trip."""
+
+    def test_metadata_round_trip(self, store):
+        store.register_agent("a1", "Agent")
+        meta = {"pr": 42, "file": "main.py", "tags": ["review", "urgent"]}
+        msg = store.post_message("a1", "review this", metadata=meta)
+        assert msg.metadata == meta
+
+        fetched = store.get_messages("general")
+        assert fetched[0].metadata == meta
+
+    def test_null_metadata(self, store):
+        store.register_agent("a1", "Agent")
+        msg = store.post_message("a1", "no meta")
+        assert msg.metadata is None
+        fetched = store.get_messages("general")
+        assert fetched[0].metadata is None
+
+
+class TestHeartbeat:
+    """T7 — Test heartbeat() method."""
+
+    def test_heartbeat_updates_last_seen(self, store):
+        store.register_agent("a1", "Agent")
+        agent_before = store.get_agent("a1")
+        time.sleep(0.01)
+        store.heartbeat("a1")
+        agent_after = store.get_agent("a1")
+        assert agent_after.last_seen > agent_before.last_seen
+
+
+class TestGetQuestionsAll:
+    """T8 — Test get_questions(unanswered_only=False)."""
+
+    def test_includes_answered(self, store):
+        store.register_agent("a1", "Agent")
+        store.register_agent("h1", "Human")
+        q = store.post_message("a1", "Question?", is_question=True)
+        store.post_message("h1", "Answer!", parent_id=q.id, sender_type=SenderType.HUMAN)
+
+        unanswered = store.get_questions("general", unanswered_only=True)
+        assert len(unanswered) == 0
+
+        all_q = store.get_questions("general", unanswered_only=False)
+        assert len(all_q) == 1
+
+
+class TestGetAgent:
+    """T9 — Test get_agent() directly."""
+
+    def test_get_existing_agent(self, store):
+        store.register_agent("a1", "Agent One", model="gpt-4")
+        agent = store.get_agent("a1")
+        assert agent is not None
+        assert agent.display_name == "Agent One"
+        assert agent.model == "gpt-4"
+
+    def test_get_nonexistent_agent(self, store):
+        agent = store.get_agent("missing")
+        assert agent is None
+
+
+class TestDuplicateRegistration:
+    """T11 — Test duplicate agent registration preserves data."""
+
+    def test_preserves_registered_at(self, store):
+        a1 = store.register_agent("a1", "Version1", model="m1")
+        original_registered = a1.registered_at
+        time.sleep(0.01)
+        a2 = store.register_agent("a1", "Version2", model="m2")
+        # display_name and model should update
+        assert a2.display_name == "Version2"
+        assert a2.model == "m2"
+        # registered_at should be preserved
+        fetched = store.get_agent("a1")
+        assert fetched.registered_at == original_registered
+
+
+class TestGetAttachmentsDir:
+    """T16 — Test get_attachments_dir()."""
+
+    def test_creates_dir(self, session_mgr):
+        s = session_mgr.create_session("att-test")
+        d = session_mgr.get_attachments_dir(s.id)
+        assert d.exists()
+        assert d.is_dir()
+        assert d.name == "attachments"
+
+
+class TestSessionIdValidation:
+    """Test M9 — session ID path traversal rejection."""
+
+    def test_rejects_path_traversal(self, session_mgr):
+        with pytest.raises(ValueError, match="path traversal"):
+            session_mgr.get_store("../../../etc")
+
+    def test_rejects_slash(self, session_mgr):
+        with pytest.raises(ValueError, match="path traversal"):
+            session_mgr.get_store("foo/bar")
+
+
+class TestMessageValidation:
+    """L6/L8/L15 — Test Message model validators."""
+
+    def test_empty_sender_id_rejected(self):
+        with pytest.raises(ValueError, match="sender_id must not be empty"):
+            Message(sender_id="", sender_type=SenderType.AGENT, content="hello")
+
+    def test_whitespace_sender_id_rejected(self):
+        with pytest.raises(ValueError, match="sender_id must not be empty"):
+            Message(sender_id="   ", sender_type=SenderType.AGENT, content="hello")
+
+    def test_empty_content_rejected(self):
+        with pytest.raises(ValueError, match="content must not be empty"):
+            Message(sender_id="a1", sender_type=SenderType.AGENT, content="")
+
+    def test_whitespace_content_rejected(self):
+        with pytest.raises(ValueError, match="content must not be empty"):
+            Message(sender_id="a1", sender_type=SenderType.AGENT, content="   ")
+
+    def test_sender_id_length_limit(self):
+        with pytest.raises(ValueError, match="exceeds"):
+            Message(sender_id="x" * 300, sender_type=SenderType.AGENT, content="hi")
+
+    def test_content_length_limit(self):
+        from agent_chat.core.models import MAX_CONTENT_LENGTH
+        with pytest.raises(ValueError, match="exceeds"):
+            Message(sender_id="a1", sender_type=SenderType.AGENT, content="x" * (MAX_CONTENT_LENGTH + 1))
+
+    def test_valid_message(self):
+        msg = Message(sender_id="a1", sender_type=SenderType.AGENT, content="hello")
+        assert msg.sender_id == "a1"
+        assert msg.content == "hello"
+
+
+class TestCreateChannelIdempotent:
+    """M7 — create_channel returns existing on conflict."""
+
+    def test_returns_existing(self, store):
+        ch1 = store.create_channel("dev", "Development")
+        ch2 = store.create_channel("dev", "Different description")
+        assert ch1.id == ch2.id
+        assert ch2.description == "Development"  # original preserved
+
+
+class TestPollingEventBased:
+    """F1/F2 — Test polling with event-based synchronization instead of sleep."""
+
+    def test_polling_with_event(self, tmp_dir):
+        mgr = SessionManager(tmp_dir / "sessions")
+        session = mgr.create_session("event-poll")
+
+        received = []
+        received_event = threading.Event()
+
+        def on_messages(msgs):
+            received.extend(msgs)
+            if msgs:
+                received_event.set()
+
+        c1 = AgentClient("a1", "Poller", session=session.id, base_dir=tmp_dir / "sessions")
+        c2 = AgentClient("a2", "Sender", session=session.id, base_dir=tmp_dir / "sessions")
+
+        c1.start_polling(callback=on_messages, interval=0.2)
+        time.sleep(0.3)  # let initial empty poll complete
+
+        c2.post_message("event-based test")
+
+        # Wait up to 3 seconds for the message (vs arbitrary sleep)
+        assert received_event.wait(timeout=3.0), "Polling did not pick up message in time"
+        assert len(received) >= 1
+        assert received[0].content == "event-based test"
+
+        c1.stop_polling()
+        c1.close()
+        c2.close()

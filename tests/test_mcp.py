@@ -176,3 +176,29 @@ def test_list_channels_after_post():
     channels = json.loads(mcp_server.list_channels())
     names = {c["name"] for c in channels}
     assert "ops" in names
+
+
+# ── T10 — update_status with invalid status ─────────────────────────────────
+
+
+def test_update_status_invalid_value():
+    """C6/T10 — Invalid status value should return an error, not crash."""
+    mcp_server.register_agent("v1", "Valid")
+    result = json.loads(mcp_server.update_status("v1", "nonexistent_status"))
+    assert "error" in result
+
+
+# ── _default_str ─────────────────────────────────────────────────────────────
+
+
+def test_default_str_raises_for_unknown_types():
+    """L14 — _default_str should raise TypeError for unsupported types."""
+    with pytest.raises(TypeError):
+        mcp_server._default_str(object())
+
+
+def test_default_str_handles_datetime():
+    """_default_str should convert datetime to ISO format."""
+    from datetime import datetime, timezone
+    dt = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    assert mcp_server._default_str(dt) == "2024-01-01T00:00:00+00:00"

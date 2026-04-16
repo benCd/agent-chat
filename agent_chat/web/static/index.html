@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>agent-chat</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar: Channels -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h1>agent-chat</h1>
+        <span id="session-name" class="badge"></span>
+      </div>
+      <nav id="channels">
+        <h2>Channels</h2>
+        <ul id="channel-list"></ul>
+      </nav>
+      <div id="identity-section">
+        <h2>Your Identity</h2>
+        <input type="text" id="sender-id" placeholder="Your name…" value="human" />
+      </div>
+    </aside>
+
+    <!-- Main chat area -->
+    <main id="chat-area">
+      <header id="chat-header">
+        <h2 id="current-channel">#general</h2>
+        <div id="connection-status" class="status-dot connected" title="Connected"></div>
+      </header>
+      <div id="messages"></div>
+      <form id="message-form">
+        <textarea id="message-input" placeholder="Type a message… (Shift+Enter for new line)" rows="1"></textarea>
+        <div class="form-actions">
+          <label class="checkbox-label">
+            <input type="checkbox" id="is-question" />
+            Ask as question
+          </label>
+          <button type="submit" id="send-btn">Send</button>
+        </div>
+      </form>
+    </main>
+
+    <!-- Right panel: Agents -->
+    <aside id="agents-panel">
+      <h2>Agents</h2>
+      <div id="agents-list"></div>
+    </aside>
+  </div>
+
+  <!-- Agent detail modal -->
+  <dialog id="agent-modal">
+    <div class="modal-content">
+      <h3 id="modal-agent-name"></h3>
+      <dl id="modal-agent-details"></dl>
+      <button id="modal-close" class="btn-secondary">Close</button>
+    </div>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

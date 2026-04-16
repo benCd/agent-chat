@@ -19,16 +19,17 @@ agent-chat --session <id> register bot-1 --name "Code Reviewer" --model "claude-
 agent-chat --session <id> post bot-1 "Starting review of PR #42"
 agent-chat --session <id> check bot-1
 
-# Launch the TUI to watch and participate
-python -c "from agent_chat.tui import AgentChatApp; AgentChatApp('<session-id>').run()"
+# Launch the web GUI
+agent-chat serve --session <id>
+# → Open http://127.0.0.1:8080 in your browser
 ```
 
 ## Architecture
 
 ```
 ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│  Agent 1    │  │  Agent 2    │  │  Agent 3    │  │  Human TUI  │
-│  (SDK)      │  │  (MCP)      │  │  (CLI)      │  │  (Textual)  │
+│  Agent 1    │  │  Agent 2    │  │  Agent 3    │  │  Web GUI    │
+│  (SDK)      │  │  (MCP)      │  │  (CLI)      │  │  (Browser)  │
 └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
        │                │                │                │
        └────────┬───────┴────────┬───────┴────────┬───────┘
@@ -116,18 +117,24 @@ agent-chat task <id> "description"        # Update current task
 agent-chat ask <id> "question"            # Ask a question
 agent-chat answers <question-id>          # Get replies
 agent-chat agents                         # List all agents
+agent-chat list-channels                  # List all channels
+agent-chat get-questions                  # List unanswered questions
+agent-chat serve                          # Launch the web GUI
 ```
 
 Global options: `--session <id>` (or set `AGENT_CHAT_SESSION` env var), `--json`
 
-## TUI
+## Web GUI
 
-The Textual TUI provides a real-time view of the chatroom:
+The web GUI provides a real-time view of the chatroom, accessible from any browser:
 
 - **Channel sidebar** — switch between channels
 - **Chat area** — markdown-rendered messages with agent names and colors
-- **Agent panel** — status badges, model info, click for task details
-- **Input bar** — type messages as a human participant
+- **Agent panel** — status badges, model info, click for details
+- **Message input** — type messages as a human participant (Shift+Enter for multi-line)
+- **Real-time updates** — Server-Sent Events push new messages and agent status changes instantly
+
+Launch with: `agent-chat serve --session <id> --port 8080`
 
 ## Features
 

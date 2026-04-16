@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
-import shutil
+import re
 import sqlite3
 import time
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,7 +71,14 @@ CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id);
 
 
 def _retry_on_busy(func):
-    """Decorator to retry on SQLITE_BUSY with exponential backoff."""
+    """Decorator to retry on SQLITE_BUSY with exponential backoff.
+
+    Note: SQLite's ``busy_timeout`` PRAGMA is also set on the connection.
+    This application-level retry exists as a second safety net for cases
+    where ``busy_timeout`` alone is insufficient (e.g., long-running
+    transactions, WAL checkpoint contention).  Both layers are intentional.
+    """
+    @functools.wraps(func)
     def wrapper(*args, **kwargs):
         max_retries = 5
         delay = 0.05
@@ -82,7 +91,7 @@ def _retry_on_busy(func):
                         time.sleep(delay)
                         delay *= 2
                         continue
-                raise
+                raise  # Re-raise non-busy errors or final attempt
     return wrapper
 
 
@@ -93,6 +102,7 @@ class MessageStore:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
+        self._lock = threading.Lock()
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -105,26 +115,38 @@ class MessageStore:
             self._conn.row_factory = sqlite3.Row
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA busy_timeout=5000")
+            self._conn.execute("PRAGMA foreign_keys = ON")
         return self._conn
 
     def _init_db(self):
-        conn = self._get_conn()
-        conn.executescript(SCHEMA_SQL)
-        # Ensure #general channel exists
-        try:
-            conn.execute(
-                "INSERT OR IGNORE INTO channels (id, name, description, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                ("general", "general", "General discussion", datetime.now(timezone.utc).isoformat()),
-            )
-            conn.commit()
-        except sqlite3.IntegrityError:
-            pass
+        with self._lock:
+            conn = self._get_conn()
+            conn.executescript(SCHEMA_SQL)
+            # Re-enable foreign keys after executescript (it implicitly commits)
+            conn.execute("PRAGMA foreign_keys = ON")
+            # Ensure #general channel exists
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO channels (id, name, description, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    ("general", "general", "General discussion", datetime.now(timezone.utc).isoformat()),
+                )
+                conn.commit()
+            except sqlite3.IntegrityError:
+                pass
 
     def close(self):
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn:
+                self._conn.close()
+                self._conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
 
     # --- Agents ---
 
@@ -146,28 +168,35 @@ class MessageStore:
             last_seen=now,
             registered_at=now,
         )
-        conn = self._get_conn()
-        conn.execute(
-            "INSERT OR REPLACE INTO agents (id, display_name, model, status, last_seen, current_task, registered_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (agent.id, agent.display_name, agent.model, agent.status.value,
-             agent.last_seen.isoformat(), agent.current_task, agent.registered_at.isoformat()),
-        )
-        conn.commit()
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT INTO agents (id, display_name, model, status, last_seen, current_task, registered_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET "
+                "display_name = excluded.display_name, "
+                "model = excluded.model, "
+                "last_seen = excluded.last_seen",
+                (agent.id, agent.display_name, agent.model, agent.status.value,
+                 agent.last_seen.isoformat(), agent.current_task, agent.registered_at.isoformat()),
+            )
+            conn.commit()
         return agent
 
     @_retry_on_busy
     def get_agent(self, agent_id: str) -> Optional[Agent]:
-        conn = self._get_conn()
-        row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
         if row is None:
             return None
         return self._row_to_agent(row)
 
     @_retry_on_busy
     def list_agents(self) -> list[Agent]:
-        conn = self._get_conn()
-        rows = conn.execute("SELECT * FROM agents ORDER BY display_name").fetchall()
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute("SELECT * FROM agents ORDER BY display_name").fetchall()
         return [self._row_to_agent(r) for r in rows]
 
     @_retry_on_busy
@@ -177,62 +206,72 @@ class MessageStore:
         status: AgentStatus,
         detail: Optional[str] = None,
     ) -> Optional[Agent]:
-        conn = self._get_conn()
-        now = datetime.now(timezone.utc).isoformat()
-        if detail is not None:
-            conn.execute(
-                "UPDATE agents SET status = ?, current_task = ?, last_seen = ? WHERE id = ?",
-                (status.value, detail, now, agent_id),
-            )
-        else:
-            conn.execute(
-                "UPDATE agents SET status = ?, last_seen = ? WHERE id = ?",
-                (status.value, now, agent_id),
-            )
-        conn.commit()
+        with self._lock:
+            conn = self._get_conn()
+            now = datetime.now(timezone.utc).isoformat()
+            if detail is not None:
+                conn.execute(
+                    "UPDATE agents SET status = ?, current_task = ?, last_seen = ? WHERE id = ?",
+                    (status.value, detail, now, agent_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE agents SET status = ?, last_seen = ? WHERE id = ?",
+                    (status.value, now, agent_id),
+                )
+            conn.commit()
         return self.get_agent(agent_id)
 
     @_retry_on_busy
     def update_agent_task(self, agent_id: str, current_task: str) -> Optional[Agent]:
-        conn = self._get_conn()
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "UPDATE agents SET current_task = ?, last_seen = ? WHERE id = ?",
-            (current_task, now, agent_id),
-        )
-        conn.commit()
+        with self._lock:
+            conn = self._get_conn()
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute(
+                "UPDATE agents SET current_task = ?, last_seen = ? WHERE id = ?",
+                (current_task, now, agent_id),
+            )
+            conn.commit()
         return self.get_agent(agent_id)
 
     @_retry_on_busy
     def heartbeat(self, agent_id: str):
-        conn = self._get_conn()
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute("UPDATE agents SET last_seen = ? WHERE id = ?", (now, agent_id))
-        conn.commit()
+        with self._lock:
+            conn = self._get_conn()
+            now = datetime.now(timezone.utc).isoformat()
+            conn.execute("UPDATE agents SET last_seen = ? WHERE id = ?", (now, agent_id))
+            conn.commit()
 
     # --- Channels ---
 
     @_retry_on_busy
     def create_channel(self, name: str, description: Optional[str] = None) -> Channel:
-        channel = Channel(name=name, description=description)
-        conn = self._get_conn()
-        conn.execute(
-            "INSERT OR IGNORE INTO channels (id, name, description, created_at) VALUES (?, ?, ?, ?)",
-            (channel.id, channel.name, channel.description, channel.created_at.isoformat()),
-        )
-        conn.commit()
+        with self._lock:
+            conn = self._get_conn()
+            # Check if channel already exists
+            row = conn.execute("SELECT * FROM channels WHERE name = ?", (name,)).fetchone()
+            if row is not None:
+                return self._row_to_channel(row)
+            channel = Channel(name=name, description=description)
+            conn.execute(
+                "INSERT INTO channels (id, name, description, created_at) VALUES (?, ?, ?, ?)",
+                (channel.id, channel.name, channel.description, channel.created_at.isoformat()),
+            )
+            conn.commit()
         return channel
 
     @_retry_on_busy
     def list_channels(self) -> list[Channel]:
-        conn = self._get_conn()
-        rows = conn.execute("SELECT * FROM channels ORDER BY name").fetchall()
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute("SELECT * FROM channels ORDER BY name").fetchall()
         return [self._row_to_channel(r) for r in rows]
 
     @_retry_on_busy
     def get_channel(self, name: str) -> Optional[Channel]:
-        conn = self._get_conn()
-        row = conn.execute("SELECT * FROM channels WHERE name = ?", (name,)).fetchone()
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute("SELECT * FROM channels WHERE name = ?", (name,)).fetchone()
         if row is None:
             return None
         return self._row_to_channel(row)
@@ -265,23 +304,24 @@ class MessageStore:
             is_question=is_question,
             metadata=metadata,
         )
-        conn = self._get_conn()
-        conn.execute(
-            "INSERT INTO messages (id, channel, sender_id, sender_type, content, timestamp, "
-            "metadata, parent_id, image_paths, is_question) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                msg.id, msg.channel, msg.sender_id, msg.sender_type.value,
-                msg.content, msg.timestamp.isoformat(),
-                json.dumps(msg.metadata) if msg.metadata else None,
-                msg.parent_id, json.dumps(msg.image_paths), int(msg.is_question),
-            ),
-        )
-        # Update agent last_seen
-        conn.execute(
-            "UPDATE agents SET last_seen = ? WHERE id = ?",
-            (msg.timestamp.isoformat(), sender_id),
-        )
-        conn.commit()
+        with self._lock:
+            conn = self._get_conn()
+            conn.execute(
+                "INSERT INTO messages (id, channel, sender_id, sender_type, content, timestamp, "
+                "metadata, parent_id, image_paths, is_question) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    msg.id, msg.channel, msg.sender_id, msg.sender_type.value,
+                    msg.content, msg.timestamp.isoformat(),
+                    json.dumps(msg.metadata) if msg.metadata else None,
+                    msg.parent_id, json.dumps(msg.image_paths), int(msg.is_question),
+                ),
+            )
+            # Update agent last_seen
+            conn.execute(
+                "UPDATE agents SET last_seen = ? WHERE id = ?",
+                (msg.timestamp.isoformat(), sender_id),
+            )
+            conn.commit()
         return msg
 
     @_retry_on_busy
@@ -291,96 +331,106 @@ class MessageStore:
         since: Optional[datetime] = None,
         limit: int = 100,
     ) -> list[Message]:
-        conn = self._get_conn()
-        if since:
-            rows = conn.execute(
-                "SELECT * FROM messages WHERE channel = ? AND timestamp > ? "
-                "ORDER BY timestamp ASC LIMIT ?",
-                (channel, since.isoformat(), limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM messages WHERE channel = ? ORDER BY timestamp ASC LIMIT ?",
-                (channel, limit),
-            ).fetchall()
+        with self._lock:
+            conn = self._get_conn()
+            if since:
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE channel = ? AND timestamp > ? "
+                    "ORDER BY timestamp ASC LIMIT ?",
+                    (channel, since.isoformat(), limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE channel = ? ORDER BY timestamp ASC LIMIT ?",
+                    (channel, limit),
+                ).fetchall()
         return [self._row_to_message(r) for r in rows]
 
     @_retry_on_busy
     def get_all_messages(self, since: Optional[datetime] = None, limit: int = 200) -> list[Message]:
-        conn = self._get_conn()
-        if since:
-            rows = conn.execute(
-                "SELECT * FROM messages WHERE timestamp > ? ORDER BY timestamp ASC LIMIT ?",
-                (since.isoformat(), limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM messages ORDER BY timestamp ASC LIMIT ?",
-                (limit,),
-            ).fetchall()
+        with self._lock:
+            conn = self._get_conn()
+            if since:
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE timestamp > ? ORDER BY timestamp ASC LIMIT ?",
+                    (since.isoformat(), limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM messages ORDER BY timestamp ASC LIMIT ?",
+                    (limit,),
+                ).fetchall()
         return [self._row_to_message(r) for r in rows]
 
     @_retry_on_busy
     def check_messages(self, agent_id: str, channel: str = "general") -> list[Message]:
         """Get new messages since this agent last checked."""
-        conn = self._get_conn()
-        row = conn.execute(
-            "SELECT last_read_ts FROM agent_last_read WHERE agent_id = ? AND channel = ?",
-            (agent_id, channel),
-        ).fetchone()
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT last_read_ts FROM agent_last_read WHERE agent_id = ? AND channel = ?",
+                (agent_id, channel),
+            ).fetchone()
 
-        if row:
-            since = row["last_read_ts"]
-            messages = conn.execute(
-                "SELECT * FROM messages WHERE channel = ? AND timestamp > ? "
-                "AND sender_id != ? ORDER BY timestamp ASC",
-                (channel, since, agent_id),
-            ).fetchall()
-        else:
-            messages = conn.execute(
-                "SELECT * FROM messages WHERE channel = ? AND sender_id != ? "
-                "ORDER BY timestamp ASC",
-                (channel, agent_id),
-            ).fetchall()
+            if row:
+                since = row["last_read_ts"]
+                messages = conn.execute(
+                    "SELECT * FROM messages WHERE channel = ? AND timestamp > ? "
+                    "AND sender_id != ? ORDER BY timestamp ASC",
+                    (channel, since, agent_id),
+                ).fetchall()
+            else:
+                messages = conn.execute(
+                    "SELECT * FROM messages WHERE channel = ? AND sender_id != ? "
+                    "ORDER BY timestamp ASC",
+                    (channel, agent_id),
+                ).fetchall()
 
-        # Update last read timestamp
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            "INSERT OR REPLACE INTO agent_last_read (agent_id, channel, last_read_ts) "
-            "VALUES (?, ?, ?)",
-            (agent_id, channel, now),
-        )
-        # Heartbeat
-        conn.execute("UPDATE agents SET last_seen = ? WHERE id = ?", (now, agent_id))
-        conn.commit()
+            # Use latest message timestamp instead of now() to avoid TOCTOU race
+            if messages:
+                last_ts = messages[-1]["timestamp"]
+            else:
+                last_ts = datetime.now(timezone.utc).isoformat()
+
+            conn.execute(
+                "INSERT OR REPLACE INTO agent_last_read (agent_id, channel, last_read_ts) "
+                "VALUES (?, ?, ?)",
+                (agent_id, channel, last_ts),
+            )
+            # Heartbeat
+            conn.execute("UPDATE agents SET last_seen = ? WHERE id = ?",
+                         (datetime.now(timezone.utc).isoformat(), agent_id))
+            conn.commit()
 
         return [self._row_to_message(r) for r in messages]
 
     @_retry_on_busy
     def get_replies(self, message_id: str) -> list[Message]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM messages WHERE parent_id = ? ORDER BY timestamp ASC",
-            (message_id,),
-        ).fetchall()
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE parent_id = ? ORDER BY timestamp ASC",
+                (message_id,),
+            ).fetchall()
         return [self._row_to_message(r) for r in rows]
 
     @_retry_on_busy
     def get_questions(self, channel: str = "general", unanswered_only: bool = True) -> list[Message]:
-        conn = self._get_conn()
-        if unanswered_only:
-            rows = conn.execute(
-                "SELECT m.* FROM messages m WHERE m.channel = ? AND m.is_question = 1 "
-                "AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.parent_id = m.id) "
-                "ORDER BY m.timestamp ASC",
-                (channel,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM messages WHERE channel = ? AND is_question = 1 "
-                "ORDER BY timestamp ASC",
-                (channel,),
-            ).fetchall()
+        with self._lock:
+            conn = self._get_conn()
+            if unanswered_only:
+                rows = conn.execute(
+                    "SELECT m.* FROM messages m WHERE m.channel = ? AND m.is_question = 1 "
+                    "AND NOT EXISTS (SELECT 1 FROM messages r WHERE r.parent_id = m.id) "
+                    "ORDER BY m.timestamp ASC",
+                    (channel,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM messages WHERE channel = ? AND is_question = 1 "
+                    "ORDER BY timestamp ASC",
+                    (channel,),
+                ).fetchall()
         return [self._row_to_message(r) for r in rows]
 
     # --- Row converters ---
@@ -425,12 +475,21 @@ class MessageStore:
 class SessionManager:
     """Manages chat sessions (chatrooms)."""
 
+    _SAFE_ID_RE = re.compile(r'^[a-zA-Z0-9_\-]+$')
+
     def __init__(self, base_dir: Optional[str | Path] = None):
         self.base_dir = Path(base_dir) if base_dir else DEFAULT_BASE_DIR
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _validate_session_id(session_id: str) -> None:
+        """Reject session IDs containing path traversal sequences."""
+        if '..' in session_id or os.sep in session_id or '/' in session_id:
+            raise ValueError(f"Invalid session ID: {session_id!r} (contains path traversal characters)")
+
     def create_session(self, name: str) -> Session:
         session = Session(name=name)
+        self._validate_session_id(session.id)
         session_dir = self.base_dir / session.id
         session_dir.mkdir(parents=True, exist_ok=True)
         (session_dir / "attachments").mkdir(exist_ok=True)
@@ -447,13 +506,16 @@ class SessionManager:
         return session
 
     def get_session(self, session_id: str) -> Optional[Session]:
+        self._validate_session_id(session_id)
         session_dir = self.base_dir / session_id
         if not (session_dir / "chat.db").exists():
             return None
         store = MessageStore(session_dir / "chat.db")
-        conn = store._get_conn()
-        row = conn.execute("SELECT * FROM session_meta WHERE id = ?", (session_id,)).fetchone()
-        store.close()
+        try:
+            conn = store._get_conn()
+            row = conn.execute("SELECT * FROM session_meta WHERE id = ?", (session_id,)).fetchone()
+        finally:
+            store.close()
         if row is None:
             return None
         return Session(
@@ -474,16 +536,24 @@ class SessionManager:
         return sessions
 
     def get_store(self, session_id: str) -> MessageStore:
+        self._validate_session_id(session_id)
         session_dir = self.base_dir / session_id
         return MessageStore(session_dir / "chat.db")
 
     def get_attachments_dir(self, session_id: str) -> Path:
+        self._validate_session_id(session_id)
         d = self.base_dir / session_id / "attachments"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    def resolve_session(self, session_id_or_name: Optional[str] = None) -> str:
-        """Resolve a session ID from ID, name, env var, or default."""
+    def resolve_session(self, session_id_or_name: Optional[str] = None, auto_create: bool = True) -> str:
+        """Resolve a session ID from ID, name, env var, or default.
+
+        Args:
+            session_id_or_name: Session ID, name, or None to use env/default.
+            auto_create: If True, create a new session when name doesn't match.
+                If False, raise ValueError for unknown names.
+        """
         # Check env var
         if session_id_or_name is None:
             session_id_or_name = os.environ.get("AGENT_CHAT_SESSION")
@@ -504,6 +574,9 @@ class SessionManager:
         for s in self.list_sessions():
             if s.name == session_id_or_name:
                 return s.id
+
+        if not auto_create:
+            raise ValueError(f"Session not found: {session_id_or_name!r}")
 
         # Create new session with this name
         session = self.create_session(session_id_or_name)

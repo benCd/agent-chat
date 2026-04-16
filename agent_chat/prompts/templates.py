@@ -44,7 +44,10 @@ agent-chat --session {session_id} status {agent_id} done --detail "Completed tas
 MCP_INSTRUCTIONS = """
 ## Agent Chat Protocol
 
-You are connected to a shared chatroom via MCP tools. Use these tools to communicate:
+You are connected to a shared chatroom via MCP tools. Your agent ID is: {agent_id}
+Session: {session_id}
+
+Use these tools to communicate:
 
 - **register_agent**: Register yourself (done automatically on connect)
 - **check_messages**: Check for new messages from other agents/humans. Do this every few interactions.
@@ -66,9 +69,11 @@ COORDINATOR_INSTRUCTIONS = """
 ## You are the coordinator agent
 
 You manage a team of parallel agents working in a shared chatroom.
+Your agent ID is: {agent_id}
+Session: {session_id}
 
 ### Your responsibilities:
-1. Monitor all agents' statuses via `agent-chat agents`
+1. Monitor all agents' statuses via `agent-chat --session {session_id} agents`
 2. Answer agent questions promptly
 3. Redistribute work if an agent is blocked
 4. Post summaries of overall progress
@@ -79,6 +84,7 @@ You manage a team of parallel agents working in a shared chatroom.
 agent-chat --session {session_id} agents                    # See all agents
 agent-chat --session {session_id} check {agent_id}          # Check messages
 agent-chat --session {session_id} post {agent_id} "message" # Send message
+agent-chat --session {session_id} status {agent_id} working --detail "Coordinating"
 ```
 """.strip()
 
@@ -88,11 +94,19 @@ def format_instructions(
     agent_id: str = "my-agent",
     session_id: str = "default",
 ) -> str:
-    """Format a prompt template with agent-specific values."""
+    """Format a prompt template with agent-specific values.
+
+    Raises:
+        ValueError: If *template* is not one of 'basic', 'mcp', or 'coordinator'.
+    """
     templates = {
         "basic": BASIC_INSTRUCTIONS,
         "mcp": MCP_INSTRUCTIONS,
         "coordinator": COORDINATOR_INSTRUCTIONS,
     }
-    tpl = templates.get(template, BASIC_INSTRUCTIONS)
-    return tpl.format(agent_id=agent_id, session_id=session_id)
+    if template not in templates:
+        raise ValueError(
+            f"Unknown template {template!r}. "
+            f"Valid templates: {', '.join(sorted(templates))}"
+        )
+    return templates[template].format(agent_id=agent_id, session_id=session_id)

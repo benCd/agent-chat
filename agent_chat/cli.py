@@ -94,16 +94,18 @@ def register(
 ):
     """Register an agent in the session."""
     _, store = _resolve(session)
-    agent = store.register_agent(agent_id, name, model=model, current_task=task)
-    store.close()
-    if json_output:
-        typer.echo(json_module.dumps({
-            "id": agent.id, "name": agent.display_name,
-            "model": agent.model, "status": agent.status.value,
-            "task": agent.current_task,
-        }))
-    else:
-        typer.echo(f"Registered {agent.display_name} ({agent.id})")
+    try:
+        agent = store.register_agent(agent_id, name, model=model, current_task=task)
+        if json_output:
+            typer.echo(json_module.dumps({
+                "id": agent.id, "name": agent.display_name,
+                "model": agent.model, "status": agent.status.value,
+                "task": agent.current_task,
+            }))
+        else:
+            typer.echo(f"Registered {agent.display_name} ({agent.id})")
+    finally:
+        store.close()
 
 
 @app.command()
@@ -115,20 +117,22 @@ def check(
 ):
     """Check for new messages since last check."""
     _, store = _resolve(session)
-    messages = store.check_messages(agent_id, channel)
-    store.close()
-    if json_output:
-        typer.echo(json_module.dumps([
-            {"id": m.id, "sender": m.sender_id, "content": m.content,
-             "channel": m.channel, "timestamp": m.timestamp.isoformat()}
-            for m in messages
-        ]))
-    else:
-        if not messages:
-            typer.echo("No new messages.")
+    try:
+        messages = store.check_messages(agent_id, channel)
+        if json_output:
+            typer.echo(json_module.dumps([
+                {"id": m.id, "sender": m.sender_id, "content": m.content,
+                 "channel": m.channel, "timestamp": m.timestamp.isoformat()}
+                for m in messages
+            ]))
         else:
-            for m in messages:
-                typer.echo(f"[{m.sender_id}] {m.content}")
+            if not messages:
+                typer.echo("No new messages.")
+            else:
+                for m in messages:
+                    typer.echo(f"[{m.sender_id}] {m.content}")
+    finally:
+        store.close()
 
 
 @app.command()
@@ -142,19 +146,21 @@ def post(
 ):
     """Post a message to a channel."""
     _, store = _resolve(session)
-    image_paths = [str(image)] if image else None
-    msg = store.post_message(
-        sender_id=agent_id, content=message, channel=channel,
-        sender_type=SenderType.AGENT, image_paths=image_paths,
-    )
-    store.close()
-    if json_output:
-        typer.echo(json_module.dumps({
-            "id": msg.id, "content": msg.content,
-            "channel": msg.channel, "timestamp": msg.timestamp.isoformat(),
-        }))
-    else:
-        typer.echo(f"Posted: {msg.id}")
+    try:
+        image_paths = [str(image)] if image else None
+        msg = store.post_message(
+            sender_id=agent_id, content=message, channel=channel,
+            sender_type=SenderType.AGENT, image_paths=image_paths,
+        )
+        if json_output:
+            typer.echo(json_module.dumps({
+                "id": msg.id, "content": msg.content,
+                "channel": msg.channel, "timestamp": msg.timestamp.isoformat(),
+            }))
+        else:
+            typer.echo(f"Posted: {msg.id}")
+    finally:
+        store.close()
 
 
 @app.command()
@@ -169,27 +175,28 @@ def status(
     """Update agent status."""
     _, store = _resolve(session)
     try:
-        agent_status = AgentStatus(status_value)
-    except ValueError:
-        typer.echo(
-            f"Invalid status: {status_value}. "
-            "Must be one of: idle, working, waiting, done",
-            err=True,
-        )
+        try:
+            agent_status = AgentStatus(status_value)
+        except ValueError:
+            typer.echo(
+                f"Invalid status: {status_value}. "
+                "Must be one of: idle, working, waiting, done",
+                err=True,
+            )
+            raise typer.Exit(1)
+        agent = store.update_agent_status(agent_id, agent_status, detail=detail)
+        if agent is None:
+            typer.echo(f"Agent not found: {agent_id}", err=True)
+            raise typer.Exit(1)
+        if json_output:
+            typer.echo(json_module.dumps({
+                "id": agent.id, "status": agent.status.value,
+                "task": agent.current_task,
+            }))
+        else:
+            typer.echo(f"{agent.id}: {agent.status.value}")
+    finally:
         store.close()
-        raise typer.Exit(1)
-    agent = store.update_agent_status(agent_id, agent_status, detail=detail)
-    store.close()
-    if agent is None:
-        typer.echo(f"Agent not found: {agent_id}", err=True)
-        raise typer.Exit(1)
-    if json_output:
-        typer.echo(json_module.dumps({
-            "id": agent.id, "status": agent.status.value,
-            "task": agent.current_task,
-        }))
-    else:
-        typer.echo(f"{agent.id}: {agent.status.value}")
 
 
 @app.command()
@@ -201,15 +208,17 @@ def task(
 ):
     """Update agent's current task."""
     _, store = _resolve(session)
-    agent = store.update_agent_task(agent_id, description)
-    store.close()
-    if agent is None:
-        typer.echo(f"Agent not found: {agent_id}", err=True)
-        raise typer.Exit(1)
-    if json_output:
-        typer.echo(json_module.dumps({"id": agent.id, "task": agent.current_task}))
-    else:
-        typer.echo(f"{agent.id}: {agent.current_task}")
+    try:
+        agent = store.update_agent_task(agent_id, description)
+        if agent is None:
+            typer.echo(f"Agent not found: {agent_id}", err=True)
+            raise typer.Exit(1)
+        if json_output:
+            typer.echo(json_module.dumps({"id": agent.id, "task": agent.current_task}))
+        else:
+            typer.echo(f"{agent.id}: {agent.current_task}")
+    finally:
+        store.close()
 
 
 @app.command()
@@ -222,17 +231,19 @@ def ask(
 ):
     """Post a question to a channel."""
     _, store = _resolve(session)
-    msg = store.post_message(
-        sender_id=agent_id, content=question, channel=channel,
-        sender_type=SenderType.AGENT, is_question=True,
-    )
-    store.close()
-    if json_output:
-        typer.echo(json_module.dumps({
-            "id": msg.id, "content": msg.content, "channel": msg.channel,
-        }))
-    else:
-        typer.echo(f"Question posted: {msg.id}")
+    try:
+        msg = store.post_message(
+            sender_id=agent_id, content=question, channel=channel,
+            sender_type=SenderType.AGENT, is_question=True,
+        )
+        if json_output:
+            typer.echo(json_module.dumps({
+                "id": msg.id, "content": msg.content, "channel": msg.channel,
+            }))
+        else:
+            typer.echo(f"Question posted: {msg.id}")
+    finally:
+        store.close()
 
 
 @app.command()
@@ -243,20 +254,22 @@ def answers(
 ):
     """Get replies to a question."""
     _, store = _resolve(session)
-    replies = store.get_replies(question_id)
-    store.close()
-    if json_output:
-        typer.echo(json_module.dumps([
-            {"id": r.id, "sender": r.sender_id, "content": r.content,
-             "timestamp": r.timestamp.isoformat()}
-            for r in replies
-        ]))
-    else:
-        if not replies:
-            typer.echo("No answers yet.")
+    try:
+        replies = store.get_replies(question_id)
+        if json_output:
+            typer.echo(json_module.dumps([
+                {"id": r.id, "sender": r.sender_id, "content": r.content,
+                 "timestamp": r.timestamp.isoformat()}
+                for r in replies
+            ]))
         else:
-            for r in replies:
-                typer.echo(f"[{r.sender_id}] {r.content}")
+            if not replies:
+                typer.echo("No answers yet.")
+            else:
+                for r in replies:
+                    typer.echo(f"[{r.sender_id}] {r.content}")
+    finally:
+        store.close()
 
 
 @app.command()
@@ -266,33 +279,101 @@ def agents(
 ):
     """List all agents in the session."""
     _, store = _resolve(session)
-    agent_list = store.list_agents()
-    store.close()
-    if json_output:
-        typer.echo(json_module.dumps([
-            {"id": a.id, "name": a.display_name, "status": a.status.value,
-             "model": a.model, "task": a.current_task}
-            for a in agent_list
-        ]))
-    else:
-        if not agent_list:
-            typer.echo("No agents registered.")
+    try:
+        agent_list = store.list_agents()
+        if json_output:
+            typer.echo(json_module.dumps([
+                {"id": a.id, "name": a.display_name, "status": a.status.value,
+                 "model": a.model, "task": a.current_task}
+                for a in agent_list
+            ]))
         else:
-            for a in agent_list:
-                parts = [a.id, a.status.value]
-                if a.model:
-                    parts.append(a.model)
-                if a.current_task:
-                    parts.append(a.current_task)
-                typer.echo("  ".join(parts))
+            if not agent_list:
+                typer.echo("No agents registered.")
+            else:
+                for a in agent_list:
+                    parts = [a.id, a.status.value]
+                    if a.model:
+                        parts.append(a.model)
+                    if a.current_task:
+                        parts.append(a.current_task)
+                    typer.echo("  ".join(parts))
+    finally:
+        store.close()
 
 
-@app.command("serve-mcp")
-def serve_mcp(
+@app.command("list-channels")
+def list_channels(
     session: Optional[str] = typer.Option(None, "--session", help="Session ID or name"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
 ):
-    """Start MCP server (placeholder)."""
-    typer.echo("MCP server not yet implemented.")
+    """List all channels in the session."""
+    _, store = _resolve(session)
+    try:
+        channels = store.list_channels()
+        if json_output:
+            typer.echo(json_module.dumps([
+                {"id": c.id, "name": c.name, "description": c.description}
+                for c in channels
+            ]))
+        else:
+            if not channels:
+                typer.echo("No channels found.")
+            else:
+                for c in channels:
+                    desc = f"  ({c.description})" if c.description else ""
+                    typer.echo(f"# {c.name}{desc}")
+    finally:
+        store.close()
+
+
+@app.command("get-questions")
+def get_questions(
+    channel: str = typer.Option("general", "--channel", help="Channel"),
+    all_questions: bool = typer.Option(False, "--all", help="Include answered questions"),
+    session: Optional[str] = typer.Option(None, "--session", help="Session ID or name"),
+    json_output: bool = typer.Option(False, "--json", help="JSON output"),
+):
+    """List questions in a channel."""
+    _, store = _resolve(session)
+    try:
+        questions = store.get_questions(channel, unanswered_only=not all_questions)
+        if json_output:
+            typer.echo(json_module.dumps([
+                {"id": q.id, "sender": q.sender_id, "content": q.content,
+                 "channel": q.channel, "timestamp": q.timestamp.isoformat()}
+                for q in questions
+            ]))
+        else:
+            if not questions:
+                typer.echo("No questions found.")
+            else:
+                for q in questions:
+                    typer.echo(f"[{q.sender_id}] {q.content}  (id: {q.id})")
+    finally:
+        store.close()
+
+
+# ── Web GUI ─────────────────────────────────────────────────────────────────
+
+@app.command("serve")
+def serve(
+    session: Optional[str] = typer.Option(None, "--session", help="Session ID or name"),
+    port: int = typer.Option(8080, "--port", help="Port to listen on"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind to"),
+):
+    """Launch the web GUI for a chat session."""
+    import uvicorn
+
+    from agent_chat.web.server import create_app
+
+    mgr = _mgr()
+    session_id = mgr.resolve_session(session)
+
+    web_app = create_app(session_id, session_mgr=mgr)
+    typer.echo(f"🚀 agent-chat web GUI → http://{host}:{port}")
+    typer.echo(f"   Session: {session_id}")
+    uvicorn.run(web_app, host=host, port=port, log_level="info")
 
 
 if __name__ == "__main__":

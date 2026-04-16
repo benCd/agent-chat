@@ -363,10 +363,54 @@ class TestAgents:
         assert data[0]["task"] == "Reviewing PR"
 
 
-# ── serve-mcp ────────────────────────────────────────────────────────────────
+# ── list-channels ────────────────────────────────────────────────────────────
 
-class TestServeMcp:
-    def test_placeholder(self):
-        r = runner.invoke(app, ["serve-mcp"])
+class TestListChannels:
+    def test_default_channel(self):
+        sid = _create_session()
+        r = runner.invoke(app, ["list-channels", "--session", sid])
         assert r.exit_code == 0
-        assert "not yet implemented" in r.output.lower()
+        assert "general" in r.output
+
+    def test_json(self):
+        sid = _create_session()
+        r = runner.invoke(app, ["list-channels", "--session", sid, "--json"])
+        assert r.exit_code == 0
+        data = json.loads(r.output)
+        assert any(c["name"] == "general" for c in data)
+
+    def test_after_post_to_new_channel(self):
+        sid = _create_session()
+        _register("bot-1", "Bot", sid)
+        runner.invoke(app, ["post", "bot-1", "hi", "--channel", "dev", "--session", sid])
+        r = runner.invoke(app, ["list-channels", "--session", sid])
+        assert r.exit_code == 0
+        assert "dev" in r.output
+
+
+# ── get-questions ────────────────────────────────────────────────────────────
+
+class TestGetQuestions:
+    def test_no_questions(self):
+        sid = _create_session()
+        r = runner.invoke(app, ["get-questions", "--session", sid])
+        assert r.exit_code == 0
+        assert "No questions" in r.output
+
+    def test_with_question(self):
+        sid = _create_session()
+        _register("bot-1", "Bot", sid)
+        runner.invoke(app, ["ask", "bot-1", "What port?", "--session", sid])
+        r = runner.invoke(app, ["get-questions", "--session", sid])
+        assert r.exit_code == 0
+        assert "What port?" in r.output
+
+    def test_json(self):
+        sid = _create_session()
+        _register("bot-1", "Bot", sid)
+        runner.invoke(app, ["ask", "bot-1", "What port?", "--session", sid])
+        r = runner.invoke(app, ["get-questions", "--session", sid, "--json"])
+        assert r.exit_code == 0
+        data = json.loads(r.output)
+        assert len(data) == 1
+        assert data[0]["content"] == "What port?"
