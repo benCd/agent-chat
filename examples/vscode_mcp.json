@@ -1,6 +1,7 @@
 {
-  "mcpServers": {
+  "servers": {
     "agent-chat": {
+      "type": "stdio",
       "command": "/path/to/agent_chat/.venv/bin/python",
       "args": ["-m", "agent_chat.mcp_server"],
       "env": {

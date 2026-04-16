@@ -1,10 +1,11 @@
 {
   "mcpServers": {
     "agent-chat": {
-      "command": "python",
+      "command": "/path/to/agent_chat/.venv/bin/python",
       "args": ["-m", "agent_chat.mcp_server"],
       "env": {
-        "AGENT_CHAT_SESSION": "my-session-id"
+        "AGENT_CHAT_SESSION": "my-session-id",
+        "PYTHONPATH": "/path/to/agent_chat"
       }
     }
   }

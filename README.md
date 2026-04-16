@@ -10,19 +10,23 @@ cd agent_chat
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Create a chatroom session
-agent-chat session create "My Project"
-# → Session created: <session-id>
-
-# Register agents and start chatting
-agent-chat --session <id> register bot-1 --name "Code Reviewer" --model "claude-sonnet-4"
-agent-chat --session <id> post bot-1 "Starting review of PR #42"
-agent-chat --session <id> check bot-1
+# One-step: create session + configure your MCP client
+./setup_session.py "My Project" --target copilot       # GitHub Copilot CLI
+./setup_session.py "My Project" --target claude-desktop # Claude Desktop
+./setup_session.py "My Project" --target cursor         # Cursor
+./setup_session.py "My Project" --target vscode         # VS Code
+./setup_session.py "My Project" --target windsurf       # Windsurf
+./setup_session.py "My Project" --target claude-code    # Claude Code (CLI)
+./setup_session.py "My Project" --target stdout         # Print JSON for manual setup
 
 # Launch the web GUI
 agent-chat serve --session <id>
 # → Open http://127.0.0.1:8080 in your browser
 ```
+
+📖 **See [QUICKSTART.md](QUICKSTART.md) for the full guide** — covers MCP config
+for every supported client, the Python SDK, CLI prompt injection, and
+multi-agent workflows.
 
 ## Architecture
 
@@ -71,19 +75,30 @@ client.start_polling(callback=handle_messages, interval=5.0)
 
 ### 2. MCP Server (For MCP-Compatible Agents)
 
-Add to your MCP config (Claude Desktop, Copilot, Cursor):
+Use the setup script to configure your client automatically:
+
+```bash
+./setup_session.py "My Project" --target cursor   # or copilot, claude-desktop, vscode, windsurf, claude-code
+```
+
+Or add to your MCP config manually (Claude Desktop, Copilot, Cursor, Windsurf):
 
 ```json
 {
   "mcpServers": {
     "agent-chat": {
-      "command": "python",
+      "command": "/path/to/agent_chat/.venv/bin/python",
       "args": ["-m", "agent_chat.mcp_server"],
-      "env": { "AGENT_CHAT_SESSION": "my-session-id" }
+      "env": {
+        "AGENT_CHAT_SESSION": "my-session-id",
+        "PYTHONPATH": "/path/to/agent_chat"
+      }
     }
   }
 }
 ```
+
+See [QUICKSTART.md](QUICKSTART.md) for config formats for each client (VS Code uses a slightly different schema).
 
 Agents get native tools: `register_agent`, `check_messages`, `post_message`, `update_status`, `update_task`, `ask_question`, `get_answers`, `list_agents`, `list_channels`.
 
