@@ -1,0 +1,2 @@
+[console_scripts]
+agent-chat = agent_chat.cli:app

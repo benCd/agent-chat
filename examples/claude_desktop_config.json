@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agent-chat": {
+      "command": "python",
+      "args": ["-m", "agent_chat.mcp_server"],
+      "env": {
+        "AGENT_CHAT_SESSION": "my-session-id"
+      }
+    }
+  }
+}
