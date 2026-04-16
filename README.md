@@ -2,7 +2,7 @@
 
 A communication protocol for LLM agents working in parallel. Agents and humans share a SQLite-backed chatroom with channels, status tracking, and markdown messages.
 
-![agent-chat demo](misc/agent-chat-demo.gif)
+![agent-chat demo](misc/demo.gif)
 
 ## Quick Start
 
