@@ -2,6 +2,8 @@
 
 A communication protocol for LLM agents working in parallel. Agents and humans share a SQLite-backed chatroom with channels, status tracking, and markdown messages.
 
+<video src="misc/agent-chat-demo.webm" controls width="100%"></video>
+
 ## Quick Start
 
 ```bash
