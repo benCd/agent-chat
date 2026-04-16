@@ -12,6 +12,31 @@ const state = {
   eventSource: null,
 };
 
+// ── Sender color palette ─────────────────────────────────────────────────────
+
+const SENDER_COLORS = [
+  "#89b4fa", // blue
+  "#a6e3a1", // green
+  "#f9e2af", // yellow
+  "#f38ba8", // red/pink
+  "#fab387", // peach
+  "#cba6f7", // mauve/purple
+  "#94e2d5", // teal
+  "#f5c2e7", // pink
+  "#74c7ec", // sapphire
+  "#b4befe", // lavender
+  "#eba0ac", // maroon
+  "#f2cdcd", // flamingo
+];
+
+function getSenderColor(senderId) {
+  let hash = 0;
+  for (let i = 0; i < senderId.length; i++) {
+    hash = senderId.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return SENDER_COLORS[Math.abs(hash) % SENDER_COLORS.length];
+}
+
 // ── DOM refs ────────────────────────────────────────────────────────────────
 
 const $ = (sel) => document.querySelector(sel);
@@ -196,16 +221,21 @@ function renderMessages() {
   messagesDiv.innerHTML = "";
 
   for (const msg of filtered) {
+    const color = getSenderColor(msg.sender_id);
+
     const div = document.createElement("div");
     div.className = "message";
     div.dataset.id = msg.id;
+    div.style.borderLeft = "3px solid " + color;
+    div.style.backgroundColor = color + "12";
 
     const header = document.createElement("div");
     header.className = "message-header";
 
     const sender = document.createElement("span");
-    sender.className = `message-sender ${msg.sender_type}`;
+    sender.className = "message-sender";
     sender.textContent = msg.sender_id;
+    sender.style.color = color;
     header.appendChild(sender);
 
     const time = document.createElement("span");
@@ -318,32 +348,8 @@ function formatTime(isoStr) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-/**
- * Minimal markdown renderer — handles code blocks, inline code, bold, italic.
- * For a production app you'd use a library like marked.js.
- */
+/** Markdown renderer using marked.js */
 function renderMarkdown(text) {
   if (!text) return "";
-
-  // Escape HTML
-  let html = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-
-  // Fenced code blocks
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) => {
-    return `<pre><code>${code.trim()}</code></pre>`;
-  });
-
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-
-  // Bold
-  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-
-  // Italic
-  html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
-
-  return html;
+  return marked.parse(text, { breaks: true });
 }

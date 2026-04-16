@@ -125,6 +125,8 @@ html, body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 #chat-header {
@@ -154,6 +156,7 @@ html, body {
 #messages {
   flex: 1;
   overflow-y: auto;
+  min-height: 0;
   padding: 16px 20px;
   display: flex;
   flex-direction: column;
@@ -167,9 +170,10 @@ html, body {
   border-radius: var(--radius);
   max-width: 100%;
   transition: background 0.15s;
+  border-left: 3px solid transparent;
 }
 
-.message:hover { background: var(--bg-surface); }
+.message:hover { background: rgba(69, 71, 90, 0.55); }
 
 .message-header {
   display: flex;
@@ -183,8 +187,7 @@ html, body {
   font-size: 14px;
 }
 
-.message-sender.agent { color: var(--accent); }
-.message-sender.human { color: var(--green); }
+/* Sender colors are now applied dynamically per sender_id in app.js */
 
 .message-time {
   font-size: 11px;
@@ -211,8 +214,68 @@ html, body {
 .message-content {
   line-height: 1.5;
   color: var(--text-primary);
-  white-space: pre-wrap;
+  white-space: normal;
   word-break: break-word;
+}
+
+.message-content p {
+  margin: 4px 0;
+}
+
+.message-content h1,
+.message-content h2,
+.message-content h3,
+.message-content h4 {
+  color: var(--text-primary);
+  margin: 10px 0 4px;
+  line-height: 1.3;
+}
+.message-content h1 { font-size: 1.4em; }
+.message-content h2 { font-size: 1.2em; }
+.message-content h3 { font-size: 1.1em; }
+.message-content h4 { font-size: 1em; }
+
+.message-content ul,
+.message-content ol {
+  padding-left: 24px;
+  margin: 4px 0;
+}
+
+.message-content blockquote {
+  border-left: 3px solid var(--accent);
+  padding: 4px 12px;
+  margin: 6px 0;
+  color: var(--text-secondary);
+}
+
+.message-content hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+
+.message-content table {
+  border-collapse: collapse;
+  margin: 6px 0;
+  width: auto;
+}
+.message-content th,
+.message-content td {
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  text-align: left;
+}
+.message-content th {
+  background: var(--bg-surface);
+  font-weight: 600;
+}
+
+.message-content a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.message-content a:hover {
+  text-decoration: underline;
 }
 
 .message-content code {
@@ -245,6 +308,7 @@ html, body {
 /* ── Message form ────────────────────────────────────────────────────── */
 
 #message-form {
+  flex-shrink: 0;
   padding: 12px 20px;
   border-top: 1px solid var(--border);
   background: var(--bg-secondary);
